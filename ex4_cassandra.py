@@ -2,44 +2,49 @@ from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.query import dict_factory
 from cassandra.query import SimpleStatement
+from langchain_openai import OpenAIEmbeddings
 import openai
 import numpy
 import pandas as pd
 
-
-cassandra_session = None
 cassandra_keyspace = "infobarbank"
 model_id = "text-embedding-3-small"
 
-def get_cassandra_session():
+class CassandraConnection:
+    _instance = None
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.connect()
+        return cls._instance
+
+    def connect(self):
+        self.cluster = Cluster()
+        self.session = self.cluster.connect()
+        self.session.set_keyspace(cassandra_keyspace)
+        print(f"Conectado! keyspaces disponíveis: {self.session.execute('SELECT * FROM system_schema.keyspaces')[0]}")
     
-    if cassandra_session is not None:
-
-        cluster = Cluster()
-        cassandra_session = cluster.connect()
-        cassandra_session.set_keyspace(keyspace)
-
-    return cassandra_session
+    def get_session(self):
+        return self.session
 
 
 def cleanup():
-    session = get_cassandra_session()
-    session.execute(f"""DROP INDEX IF EXISTS {cassandra_keyspace}.openai_desc""")
-    session.execute(f"""DROP TABLE IF EXISTS {cassandra_keyspace}.products_table""")
+    session = CassandraConnection().get_session()
+    session.execute(f"DROP TABLE IF EXISTS {cassandra_keyspace}.pessoas")
 
 def create_table():
-    session = get_cassandra_session()
+    session = CassandraConnection().get_session()
     # Tabela de vetores
     session.execute(f"""
                     CREATE TABLE IF NOT EXISTS {cassandra_keyspace}.pessoas(
-                        id int,
-                        chunk_id int,
+                        id bigint,
+                        chunk_id bigint,
                         nome text,
                         cpf text,
                         municipio text,
                         uf text,
                         openai_embedding vector<float, 1536>,
-                        PRIMARY KEY (product_id, chunk_id)
+                        PRIMARY KEY (id, chunk_id)
                     )"""
     )
     
@@ -53,33 +58,38 @@ def create_table():
 
 def lista_pessoas():
     # Carregando os dados do arquivo CSV para o Pandas
-    pessoas_df = pd.read_csv('./assets/csv/pessoas.csv', sep=';')
+    pessoas_df = pd.read_csv('./assets/csv/pessoas.csv', sep=';', header=1)
     pessoas_df[:4]
     return pessoas_df
 
 def carga_de_dados():
-    session = get_cassandra_session()
+    embeddings = OpenAIEmbeddings()
+    session = CassandraConnection().get_session()
     pessoas_df = lista_pessoas()
+    print(pessoas_df.info())
 
     for id, row in pessoas_df.iterrows():
-        full_chunk = f"{row.nome} municipio: {row.municipio} uf: {row.uf}"
-    
-        embedding = openai.Embedding.create(input=full_chunk, model=model_id)['data'][0]['embedding']
+
+        print(f"id: {id}, row: {row}")
+
+        full_chunk = f"{row.iloc[2]} municipio: {row.iloc[3]} uf: {row.iloc[4]}"
+        print(f"full_chunk: {full_chunk}")
+
+        #embedding = embeddings.embed_query(input=full_chunk, model=model_id)['data'][0]['embedding']
+        embedding = embeddings.embed_query(full_chunk)
+        print(f"embedding: {embedding}")
+
+        cql_query = f"INSERT INTO {cassandra_keyspace}.pessoas(id, chunk_id, nome, cpf, municipio, uf, openai_embedding) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        print(cql_query)
+        query = SimpleStatement(cql_query)
+
+        session.execute(query, (row.iloc[0], row.iloc[0], row.iloc[2], row.iloc[1], row.iloc[3], row.iloc[4], embedding))
         
-        query = SimpleStatement(
-                    f"""
-                    INSERT INTO {cassandra_keyspace}.pessoas
-                    (id, chunk_id, nome, cpf, municipio, uf, openai_embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """
-                )
-        display(row)
 
-        session.execute(query, (row.id, chunk_id, row.nome, row.cpf, row.municipio, row.uf, embedding))
+def main():
+    cleanup()
+    create_table()
+    carga_de_dados()
 
-# Gerando Chunks
-p = lista_pessoas()
-print(p.columns)
-print(p.at[ 0,"NOME" ])
-chunk = p.at[ 0,"NOME" ] + " / " + p.at[0,"MUNICIPIO"]
-print(f"Texto a ser usado para gerar o vetor: '{chunk}'")
+if __name__ == "__main__":
+    main()
