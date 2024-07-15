@@ -75,7 +75,6 @@ def carga_de_dados():
         full_chunk = f"{row.iloc[2]} municipio: {row.iloc[3]} uf: {row.iloc[4]}"
         print(f"full_chunk: {full_chunk}")
 
-        #embedding = embeddings.embed_query(input=full_chunk, model=model_id)['data'][0]['embedding']
         embedding = embeddings.embed_query(full_chunk)
         print(f"embedding: {embedding}")
 
